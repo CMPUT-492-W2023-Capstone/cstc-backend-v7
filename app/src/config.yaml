@@ -1,0 +1,20 @@
+input_config:
+  class_path: configuration.InputConfig
+  init_args:
+    media_source: /home/dekr0/Videos/test.mp4
+    yolo_models: ../models/yolov7.pt
+    device: "0"
+output_video_config:
+  class_path: configuration.OutputVideoConfig
+output_result_config:
+  class_path: configuration.OutputResultConfig
+algorithm_config:
+  class_path: configuration.AlgorithmConfig
+  init_args:
+    conf_thres: 0.65
+    iou_thres: 0.7
+    fp16: True
+    class_filter: [1, 2, 3, 5, 6, 7]
+    tracking_method: OCSORT
+    tracking_config: tracking_configs/ocsort.yaml
+
