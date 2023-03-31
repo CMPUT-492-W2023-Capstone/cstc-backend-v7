@@ -31,7 +31,8 @@ class DetectionTask:
         im = self._uint_to_float(im)
 
         # Warmup
-        if self.input_config.device.type != 'cpu' and (old_img_b != im.shape[0] or old_img_h != im.shape[2] or old_img_w != im.shape[3]):
+        if self.input_config.device.type != 'cpu' and \
+                (old_img_b != im.shape[0] or old_img_h != im.shape[2] or old_img_w != im.shape[3]):
             old_img_b = im.shape[0]
             old_img_h = im.shape[2]
             old_img_w = im.shape[3]

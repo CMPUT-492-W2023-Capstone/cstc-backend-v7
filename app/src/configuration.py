@@ -51,10 +51,10 @@ class InputConfig:
     def __init__(
             self,
             device: str | int = ComputingDevice.CPU.value,
-            reid_models: Path = MODELS_PATH / 'osnet_x0_25_msmt17.pt',
+            reid_models=MODELS_PATH / 'osnet_x0_25_msmt17.pt',
             media_source: str = '0',
             yolo_config: str = 'cfg/yolor_p6.cfg',
-            yolo_models: Path = MODELS_PATH / 'yolor_p6.pt'
+            yolo_models=MODELS_PATH / 'yolor_p6.pt'
     ):
         self.device = select_device(device)
 
@@ -66,7 +66,7 @@ class InputConfig:
         self.yolo_models = yolo_models
 
         self.webcam_enable = _is_valid_webcam(media_source) or \
-            (_is_valid_url(media_source) and not _is_valid_file(media_source))
+                             (_is_valid_url(media_source) and not _is_valid_file(media_source))
         self.segmentation = self.yolo_models.name.endswith('-seg')
 
     def load_dataset_model(self, inference_img_size, fp16=False, trace=False):
@@ -130,11 +130,11 @@ class OutputResultConfig:
             no_save: bool = False,
             save_confid: bool = False,
             save_crop: bool = False,
-            save_directory: Path = APP_PATH / 'output',
+            save_directory=APP_PATH / 'output',
             save_existed: bool = False,
             save_name: str = 'exp',
             save_project_exist: bool = False,
-            save_project_path: Path = APP_PATH / 'runs' / 'track',
+            save_project_path=APP_PATH / 'runs' / 'track',
             save_text: bool = False,
             save_traj: bool = False,
             save_video: bool = False,
@@ -154,7 +154,7 @@ class OutputResultConfig:
         self.visualization = visualization
         self.export_name = 'ensemble'
 
-    def configure_save_location(self, yolo_models: Path | list[Path]):
+    def configure_save_location(self, yolo_models):
         if type(yolo_models) is not list:
             self.export_name = yolo_models.stem
         elif len(yolo_models) == 1:
@@ -184,7 +184,7 @@ class AlgorithmConfig:
             iou_thres: float = 0.5,
             max_det: int = 1000,
             tracking_method: TrackingMethod = TrackingMethod.BYTETRACK,
-            tracking_config: Path = TRACKING_CONFIG / 'bytetrack.yaml',
+            tracking_config=TRACKING_CONFIG / 'bytetrack.yaml',
     ):
         self.agnostic_nms = agnostic_nms
         self.augment = augment

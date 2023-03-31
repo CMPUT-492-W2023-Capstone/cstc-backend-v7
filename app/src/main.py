@@ -60,8 +60,7 @@ class TrackedObject:
         return self.__str__()
 
 
-def stream_result(box_annotator: Annotator, im0, source_path: Path,
-                  stream_windows: list[Path]):
+def stream_result(box_annotator: Annotator, im0, source_path, stream_windows: list):
     im0 = box_annotator.result()
 
     if platform.system() == 'Linux' and source_path not in stream_windows:
@@ -226,5 +225,5 @@ def main(
 
 
 if __name__ == '__main__':
-    with torch.no_grad():  # Use with yolor
+    with torch.no_grad():
         CLI(main, as_positional=False)
