@@ -81,6 +81,8 @@ app/training_datasets
 app/training_history
 app/models
 
+private-key.json
+
 */runs/
 */__pycache__/
 __pycache__
