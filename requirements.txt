@@ -17,6 +17,7 @@ PyYAML == 6.0
 requests==2.28.2 # 2.27.1
 scipy # Remark : In Jetson Nano, use 1.5.4 since it only run Python 3.6.9
 seaborn==0.12.2 # 0.11.2
+sentry-sdk
 tensorboard==2.12.0 # 2.10.1
 thop==0.1.1.post2209072238
 torch # Remark : In Jetson Nano, use 1.10.0 since it only run on Python 3.6.9
