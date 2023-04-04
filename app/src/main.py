@@ -1,19 +1,26 @@
 import asyncio
+import math
 import platform
-from jsonargparse import CLI
 from pathlib import Path
 
 import cv2
 import torch
+from jsonargparse import CLI
 
 import upload
 
-from utils.general import apply_classifier, scale_coords
-
-from ultralytics.yolo.utils.plotting import Annotator, colors
+from module import Annotator, apply_classifier, colors, scale_coords
 
 from algorithm import DetectionTask, TrackingTask
 from configuration import InputConfig, OutputVideoConfig, OutputResultConfig, AlgorithmConfig
+
+
+def get_center(bbox):
+    return (bbox[2] - bbox[0]) / 2, (bbox[3] - bbox[1]) / 2
+
+
+def get_velocity(x1: float, x2: float, y1: float, y2: float) -> float:
+    return math.sqrt((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1))
 
 
 class TrackedObject:
@@ -22,12 +29,20 @@ class TrackedObject:
         self.v_id = v_id
         self.vehicle_type = vehicle_type
         self.confidence = confidence
+        self.first_bbox = bbox
         self.bbox = bbox
+        # For estimate whether if a vehicle will exist
+        # self.area_history = [abs(self.bbox[2] - self.bbox[0]) * abs(self.bbox[3] - self.bbox[1])]
+        self.age = 1
 
-    def velocity(self):
-        pass
+    # def get_rate_of_area(self, delta=10):
+    #     length = len(self.area_history)
+    #     if delta > length:
+    #         return (self.area_history[length - 1] - self.area_history[0]) / length
+    #     else:
+    #         return (self.area_history[length - 1] - self.area_history[length - delta]) / delta
 
-    def get_label(self, config: OutputVideoConfig):
+    def get_label(self, config: OutputVideoConfig) -> str:
         label = 'Empty'
         if not config.hide_labels:
             class_label = None if config.hide_class else f'{self.vehicle_type}'
@@ -37,19 +52,27 @@ class TrackedObject:
 
         return label
 
+    def get_velocity(self) -> float:
+        x1, y1 = get_center(self.first_bbox)
+        x2, y2 = get_center(self.bbox)
+        return get_velocity(x1, x2, y1, y2)
+
     """
     Check whether if two objects overlap each other
     bbox is x1', y1', x2', and y2'
     self is x1 , y1 , x2 , and y2
     """
-    def is_overlap(self, bbox):
-        return (self.bbox[0] <= bbox[2] and bbox[0] <= self.bbox[2]) and (  # X overlaps
-                    self.bbox[1] <= bbox[3] and bbox[1] <= self.bbox[3])  # Y overlaps
+
+    # def is_overlap(self, bbox):
+    #     return (self.bbox[0] <= bbox[2] and bbox[0] <= self.bbox[2]) and (  # X overlaps
+    #             self.bbox[1] <= bbox[3] and bbox[1] <= self.bbox[3])  # Y overlaps
 
     def update(self, vehicle_type: str = '', confidence: int = -1, bbox: list = None):
         self.vehicle_type = vehicle_type
         self.confidence = confidence
         self.bbox = bbox
+        # self.area_history.append(abs(self.bbox[2] - self.bbox[0]) * abs(self.bbox[3] - self.bbox[1]))
+        self.age += 1
 
     def __str__(self):
         return f'Vehicle Id: {self.v_id} | Vehicle Type: {self.vehicle_type} ' \
@@ -71,8 +94,12 @@ def stream_result(box_annotator: Annotator, im0, source_path, stream_windows: li
 
     cv2.imshow(str(source_path), im0)
 
-    if cv2.waitKey(1) == ord('q'):
+    if cv2.waitKey(1000) == ord('q'):
         exit()
+
+
+def is_at_boundary(x: float, y: float, WIDTH: float, HEIGHT: float):
+    return x <= 5.0 or y <= 5.0 or WIDTH - x <= 5.0 or HEIGHT - y <= 5.0
 
 
 def main(
@@ -96,10 +123,31 @@ def main(
 
     # save_video_paths, video_writes, save_txt_paths = [[None] * dataset_size for i in range(3)]
 
-    seen_obj: int = 0
-    streaming_windows: list = []
+    # currently tracked vehicles
+    candidates: {str: TrackedObject} = {}
+    # tracked vehicles that are identify as moving vehicle
+    selective_candidates: {str: TrackedObject} = {}
+    blur_frames_count: int = 0
+    WIDTH = media_dataset.cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+    HEIGHT = media_dataset.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+    # Velocity thersold for determine whether if a vehicle is moving or noting moving
+    VEL_THERSOLD = math.sqrt(WIDTH * WIDTH + HEIGHT * HEIGHT) \
+        / algorithm_config.update_period
+    VEL_THERSOLD = VEL_THERSOLD * (1 + algorithm_config.velocity_thersold_delta)
 
-    current_frames, prev_frames = [[None] * media_dataset_size for i in range(2)]
+    tracker_outputs = []  # tracker_outputs = [[]] * media_dataset_size
+    for i in range(media_dataset_size):
+        tracker_outputs.append([])
+
+    # current_frames, prev_frames = [[None] * media_dataset_size for i in range(2)]
+    current_frames = []
+    for i in range(media_dataset_size):
+        current_frames.append(None)
+    prev_frames = []
+    for i in range(media_dataset_size):
+        prev_frames.append(None)
+
+    streaming_windows: list = []
 
     detection_task = DetectionTask(input_config, algorithm_config, output_result_config)
     tracking_task = TrackingTask(
@@ -111,13 +159,13 @@ def main(
         algorithm_config.fp16
     )
 
+    assert 0 < media_dataset_size == len(tracker_outputs) \
+           and len(current_frames) > 0 and len(prev_frames) > 0 \
+           and len(tracking_task.tracker_hosts) == media_dataset_size
+
     classifier = None
     if algorithm_config.classify:
         classifier = input_config.load_classifier()
-
-    results = [[]] * media_dataset_size
-
-    vehicles: {str: TrackedObject} = {}
 
     # For warmup
     old_img_w = algorithm_config.inference_img_size[0]
@@ -132,13 +180,14 @@ def main(
             .type_as(next(model.parameters()))
         )
 
-    log_msg = ''
-
     # OpenCV convention : im means image after modify, im0 means copy
     # of the image before modification (i.e. original image)
     for frame_index, batch in enumerate(media_dataset):
         source_paths, im, im0s, video_capture = batch
-        
+        if cv2.Laplacian(cv2.cvtColor(im0s, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var() \
+                < algorithm_config.blur_thersold:
+            blur_frames_count += 1
+
         detection_objs, im, old_img_w, old_img_h, old_img_b, model = detection_task.get_detection_objs(
             im, model,
             old_img_w,
@@ -150,8 +199,6 @@ def main(
             detection_objs = apply_classifier(detection_objs, classifier, im, im0s)
 
         for i, detection in enumerate(detection_objs):
-            seen_obj += 1
-
             if input_config.webcam_enable:
                 im0 = im0s[i].copy()
                 source_path = Path(source_paths[i])
@@ -159,10 +206,7 @@ def main(
                 im0 = im0s.copy()
                 source_path = source_paths
 
-            try:
-                current_frames[i] = im0
-            except IndexError:
-                pass
+            current_frames[i] = im0
 
             gain = torch.tensor(im0.shape)[[1, 0, 1, 0]]
 
@@ -172,52 +216,71 @@ def main(
                 example=str(class_names)
             )
 
-            try:
-                tracking_task.motion_compensation(i, current_frames[i], prev_frames[i])
+            tracking_task.motion_compensation(i, current_frames[i], prev_frames[i])
 
-                if detection is None or not len(detection):
-                    continue
+            if detection is None or not len(detection):
+                continue
 
-                detection[:, :4] = scale_coords(
-                    im.shape[2:],
-                    detection[:, :4],
-                    im0.shape).round()
+            detection[:, :4] = scale_coords(
+                im.shape[2:],
+                detection[:, :4],
+                im0.shape).round()
 
-                results[i] = tracking_task.tracker_hosts[i].update(detection.cpu(), im0)
+            tracker_outputs[i] = tracking_task.tracker_hosts[i].update(detection.cpu(), im0)
 
-                if len(results[i]) < 0:
-                    continue
-            except (TypeError, IndexError):
-                pass
+            if len(tracker_outputs[i]) < 0:
+                continue
 
-            for result in results[i]:
-                v_id = result[4]
-                class_name = class_names[int(result[5])]
-                confidence = result[6]
-                bbox = result[0:4]
+            for tracker_output in tracker_outputs[i]:
+                v_id = tracker_output[4]
+                class_name = class_names[int(tracker_output[5])]
+                confidence = tracker_output[6]
+                bbox = tracker_output[0:4]
 
                 # New vehicle being tracked
-                if v_id not in vehicles.keys():
-                    vehicles[v_id] = TrackedObject(
-                            v_id,
-                            class_name,
-                            confidence,
-                            bbox
-                         )
+                if v_id in selective_candidates.keys():
+                    continue
+                if v_id not in candidates.keys():
+                    candidates[v_id] = TrackedObject(
+                        v_id,
+                        class_name,
+                        confidence,
+                        bbox
+                    )
                 else:
-                    vehicles[v_id].update(class_name, confidence, bbox)
+                    candidates[v_id].update(class_name, confidence, bbox)
 
                 box_annotator.box_label(
-                    vehicles[v_id].bbox,
-                    vehicles[v_id].get_label(output_video_config),
+                    candidates[v_id].bbox,
+                    candidates[v_id].get_label(output_video_config),
                     color=colors(1, True)
                 )
 
-            log_msg += f'Frame {frame_index}: vehicles = {len(vehicles)}\n'
+            # Select candidate (moving not static)
+            if frame_index != 0 and frame_index % algorithm_config.update_period == 0:
+                for v_id, candidate in candidates.items():
+                    if candidate.get_velocity() >= VEL_THERSOLD \
+                            and v_id not in selective_candidates.keys():
+                        selective_candidates[v_id] = candidate
+                        candidates[v_id] = None
 
-            if frame_index != 0 and frame_index % 300 == 0:
-                asyncio.run(upload.main(vehicles.copy()))
-                # vehicles = {}
+                candidates = {v_id: candidate for v_id, candidate
+                              in candidates.items() if candidate is not None}
+
+            if blur_frames_count != 0 and blur_frames_count >= algorithm_config.blur_frames_limit:
+                asyncio.run(upload.notify_blur())
+                blur_frames_count = 0
+
+            if frame_index != 0 and frame_index % output_result_config.upload_period == 0:
+                # asyncio.run(upload.main(vehicles.copy()))
+                asyncio.run(upload.static_time(
+                    selective_candidates.copy(),
+                    class_names,
+                    algorithm_config.class_filter,
+                    output_result_config.save_csv
+                ))
+
+            print(f'{frame_index}')
 
             stream_result(box_annotator, im0, source_path, streaming_windows)
 
