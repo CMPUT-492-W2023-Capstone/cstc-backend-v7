@@ -1,6 +1,6 @@
 import torch
 
-from utils.general import non_max_suppression
+from module import non_max_suppression
 
 from trackers.multi_tracker_zoo import create_tracker
 
