@@ -316,7 +316,7 @@ class OCSort(object):
                 d = trk.last_observation[:4]
             if (trk.time_since_update < 1) and (trk.hit_streak >= self.min_hits or self.frame_count <= self.min_hits):
                 # +1 as MOT benchmark requires positive
-                velocity_x, velocity_y = [trk.velocity[0], trk.velocity[1]] if trk.velocity is not None else [0, 0]
+                velocity_x, velocity_y = [trk.velocity[0], trk.velocity[1]] if trk.velocity is not None else [-1, -1]
                 ret.append(np.concatenate((
                     d, [trk.id+1], [trk.cls], [trk.conf], [velocity_x], [velocity_y]
                 )).reshape(1, -1))
