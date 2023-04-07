@@ -15,10 +15,6 @@ from algorithm import DetectionTask, TrackingTask
 from configuration import InputConfig, OutputVideoConfig, OutputResultConfig, AlgorithmConfig
 
 
-EVENT_LOOP = asyncio.get_event_loop()
-
-
-
 def get_center(bbox):
     return (bbox[2] - bbox[0]) / 2, (bbox[3] - bbox[1]) / 2
 
@@ -99,7 +95,6 @@ def stream_result(box_annotator: Annotator, im0, source_path, stream_windows: li
     cv2.imshow(str(source_path), im0)
 
     if cv2.waitKey(1000) == ord('q'):
-        EVENT_LOOP.close()
         exit()
 
 
@@ -128,12 +123,12 @@ def main(
 
     # save_video_paths, video_writes, save_txt_paths = [[None] * dataset_size for i in range(3)]
 
-    candidates: {str: TrackedObject} = {}  # currently tracked vehicles
-
     # tracked vehicles that are identify as moving vehicle
     selective_candidates: {str: TrackedObject} = {}
     blur_frames_count: int = 0
 
+    # TODO: When feeding frames from a stream (non file), dimension is not available
+    # TODO: Hardcode ?
     WIDTH = media_dataset.cap.get(cv2.CAP_PROP_FRAME_WIDTH)
     HEIGHT = media_dataset.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
 
@@ -192,10 +187,6 @@ def main(
     for frame_index, batch in enumerate(media_dataset):
         source_paths, im, im0s, video_capture = batch
 
-        if cv2.Laplacian(cv2.cvtColor(im0s, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var() \
-                < algorithm_config.blur_thersold:
-            blur_frames_count += 1
-
         detection_objs, im, old_img_w, old_img_h, old_img_b, model = detection_task.get_detection_objs(
             im, model,
             old_img_w,
@@ -245,39 +236,21 @@ def main(
                 confidence = tracker_output[6]
                 bbox = tracker_output[0:4]
 
-                # New vehicle being tracked
                 if v_id in selective_candidates.keys():
-                    continue
-                if v_id not in candidates.keys():
-                    candidates[v_id] = TrackedObject(
-                        v_id,
-                        class_name,
-                        confidence,
-                        bbox
-                    )
+                    selective_candidates[v_id].update(class_name, confidence, bbox)
                 else:
-                    candidates[v_id].update(class_name, confidence, bbox)
+                    selective_candidates[v_id] = TrackedObject(
+                            v_id,
+                            class_name,
+                            confidence,
+                            bbox
+                    )
 
                 box_annotator.box_label(
                     candidates[v_id].bbox,
                     candidates[v_id].get_label(output_video_config),
                     color=colors(1, True)
                 )
-
-            # Select candidate (moving not static)
-            if frame_index != 0 and frame_index % algorithm_config.update_period == 0:
-                for v_id, candidate in candidates.items():
-                    if candidate.get_velocity() >= VEL_THERSOLD \
-                            and v_id not in selective_candidates.keys():
-                        selective_candidates[v_id] = candidate
-                        candidates[v_id] = None
-
-                candidates = {v_id: candidate for v_id, candidate
-                              in candidates.items() if candidate is not None}
-
-            if blur_frames_count != 0 and blur_frames_count >= algorithm_config.blur_frames_limit:
-                asyncio.run(upload.notify_blur())
-                blur_frames_count = 0
 
             if frame_index != 0 and frame_index % output_result_config.upload_period == 0:
                 # asyncio.run(upload.main(vehicles.copy()))
@@ -290,15 +263,6 @@ def main(
                     output_result_config.save_csv
                 ))
                 """
-
-                EVENT_LOOP.run_until_complete(
-                        upload.static_time(
-                            selective_candidates.copy(), 
-                            class_names, 
-                            algorithm_config.class_filter, 
-                            output_result_config.save_csv
-                        )
-                )
 
             stream_result(box_annotator, im0, source_path, streaming_windows)
 

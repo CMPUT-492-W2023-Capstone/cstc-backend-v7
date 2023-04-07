@@ -52,8 +52,10 @@ class InputConfig:
             yolo_config: str = 'cfg/yolor_p6.cfg',
             yolo_models=MODELS_PATH / 'yolor_p6.pt'
     ):
-        if type(device) is int:
-            device = int(device)
+        if device.isnumeric():
+            self.device = int(device)
+        else:
+            self.device = device
 
         self.device = select_device(device)
 
@@ -83,6 +85,7 @@ class InputConfig:
             media_dataset = LoadStreams(self.media_source, img_size=inference_img_size, stride=stride)
         else:
             media_dataset = LoadImages(self.media_source, img_size=inference_img_size, stride=stride)
+        media_dataset_size = 1 if self.webcam_enable else len(media_dataset)
 
         return inference_img_size, media_dataset, len(media_dataset), model
 

@@ -10,7 +10,7 @@ output_result_config:
   class_path: configuration.OutputResultConfig
   init_args:
     save_csv: True
-    upload_period: 300
+    upload_period: 10
 algorithm_config:
   class_path: configuration.AlgorithmConfig
   init_args:
