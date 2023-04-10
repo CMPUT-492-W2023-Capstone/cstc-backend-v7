@@ -1,3 +1,5 @@
+import logging
+
 from enum import Enum
 from pathlib import Path
 
@@ -52,12 +54,8 @@ class InputConfig:
             yolo_config: str = 'cfg/yolor_p6.cfg',
             yolo_models=MODELS_PATH / 'yolor_p6.pt'
     ):
-        if device.isnumeric():
-            self.device = int(device)
-        else:
-            self.device = device
-
         self.device = select_device(device)
+        logging.info(f'{device} selected')
 
         self.media_source = check_file(media_source) \
             if _is_valid_file(media_source) and _is_valid_url(media_source) else media_source
@@ -72,6 +70,9 @@ class InputConfig:
 
     def load_dataset_model(self, inference_img_size, fp16=False, trace=False):
         model = attempt_load(self.yolo_models, map_location=self.device)
+
+        logging.info(f'{self.yolo_models} loaded')
+
         stride = int(model.stride.max())
         inference_img_size[0] = check_img_size(inference_img_size[0], s=stride)
         inference_img_size[1] = check_img_size(inference_img_size[1], s=stride)
@@ -83,11 +84,15 @@ class InputConfig:
 
         if self.webcam_enable:
             media_dataset = LoadStreams(self.media_source, img_size=inference_img_size, stride=stride)
+            logging.info('Input frames from stream / camera')
         else:
             media_dataset = LoadImages(self.media_source, img_size=inference_img_size, stride=stride)
+            logging.info('Input frames from media files')
         media_dataset_size = 1 if self.webcam_enable else len(media_dataset)
 
-        return inference_img_size, media_dataset, len(media_dataset), model
+        logging.info(f'{media_dataset_size} media sources are detected and loaded')
+
+        return inference_img_size, media_dataset, media_dataset_size, model
 
     def load_classifier(self):
         model = load_classifier(name='resnet101', n=2)
@@ -183,3 +188,4 @@ class AlgorithmConfig:
         self.tracking_config = tracking_config
         self.velocity_thersold_delta = velocity_thersold_delta
         self.update_period = update_period
+
