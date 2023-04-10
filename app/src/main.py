@@ -1,5 +1,6 @@
 import asyncio
 import math
+import logging
 import platform
 from pathlib import Path
 
@@ -16,7 +17,6 @@ from configuration import InputConfig, OutputVideoConfig, OutputResultConfig, Al
 
 
 EVENT_LOOP = asyncio.get_event_loop()
-
 
 
 def get_center(bbox):
@@ -87,6 +87,46 @@ class TrackedObject:
         return self.__str__()
 
 
+def legacy_selection(v_id, class_name, confidence, bbox, box_annotator, output_video_config,
+                     candidates, selective_candidates):
+    if v_id in selective_candidates.keys():
+        selective_candidates[v_id].update(class_name, confidence, bbox)
+    else:
+        selective_candidates[v_id] = TrackedObject(
+                v_id,
+                class_name,
+                confidence,
+                bbox
+        )
+
+    box_annotator.box_label(
+            selective_candidates[v_id].bbox,
+            selective_candidates[v_id].get_label(output_video_config),
+            color=colors(1, True)
+    )
+
+
+def selection(v_id, class_name, confidence, bbox, box_annotator, output_video_config,
+              candidates, selective_candidates):
+    if v_id in selective_candidates.keys():
+        return
+    if v_id not in candidates.keys():
+        candidates[v_id] = TrackedObject(
+                v_id,
+                class_name,
+                confidence,
+                bbox
+        )
+    else:
+        candidates[v_id].update(class_name, confidence, bbox)
+
+    box_annotator.box_label(
+            candidates[v_id].bbox,
+            candidates[v_id].get_label(output_video_config),
+            color=colors(1, True)
+    )
+
+
 def stream_result(box_annotator: Annotator, im0, source_path, stream_windows: list):
     im0 = box_annotator.result()
 
@@ -98,7 +138,7 @@ def stream_result(box_annotator: Annotator, im0, source_path, stream_windows: li
 
     cv2.imshow(str(source_path), im0)
 
-    if cv2.waitKey(1000) == ord('q'):
+    if cv2.waitKey(1) == ord('q'):
         EVENT_LOOP.close()
         exit()
 
@@ -111,10 +151,9 @@ def main(
         input_config: InputConfig,
         output_video_config: OutputVideoConfig,
         output_result_config: OutputResultConfig,
-        algorithm_config: AlgorithmConfig
+        algorithm_config: AlgorithmConfig,
+        legacy: bool = False
 ):
-    # save_dir = save_options.configure_save(input_options.yolo_models)
-
     # load video frames (media dataset) and AI model
     algorithm_config.inference_img_size, media_dataset, media_dataset_size, model = \
         input_config.load_dataset_model(
@@ -126,16 +165,21 @@ def main(
     # names of the classification defined in the AI model
     class_names = model.module.names if hasattr(model, 'module') else model.names
 
-    # save_video_paths, video_writes, save_txt_paths = [[None] * dataset_size for i in range(3)]
+    selective_candidates: {str: TrackedObject} = {} # tracked vehicles that are identify as moving vehicle
 
-    candidates: {str: TrackedObject} = {}  # currently tracked vehicles
+    # Determine the dimension of media
+    if legacy:
+        # WIDTH = 1920
+        # HEIGHT = 1080
+        WIDTH = media_dataset.cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+        HEIGHT = media_dataset.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+    else:
+        WIDTH = media_dataset.cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+        HEIGHT = media_dataset.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
 
-    # tracked vehicles that are identify as moving vehicle
-    selective_candidates: {str: TrackedObject} = {}
     blur_frames_count: int = 0
 
-    WIDTH = media_dataset.cap.get(cv2.CAP_PROP_FRAME_WIDTH)
-    HEIGHT = media_dataset.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+    candidates: {str: TrackedObject} = {}  # currently tracked vehicles
 
     # Velocity thersold for determine whether if a vehicle is moving or noting moving
     VEL_THERSOLD = math.sqrt(WIDTH * WIDTH + HEIGHT * HEIGHT) \
@@ -189,10 +233,14 @@ def main(
 
     # OpenCV convention : im means image after modify, im0 means copy
     # of the image before modification (i.e. original image)
+    logging.info('Entering main loop')
     for frame_index, batch in enumerate(media_dataset):
         source_paths, im, im0s, video_capture = batch
+        logging.info(f'Start processing {frame_index} frame')
 
-        if cv2.Laplacian(cv2.cvtColor(im0s, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var() \
+        # Blur detection (Disable in legacy mode)
+        if not legacy and cv2.Laplacian( \
+                cv2.cvtColor(im0s, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var() \
                 < algorithm_config.blur_thersold:
             blur_frames_count += 1
 
@@ -202,6 +250,7 @@ def main(
             old_img_h,
             old_img_b
         )
+        logging.info(f'{len(detection_objs)} objects were detected')
 
         if algorithm_config.classify:
             detection_objs = apply_classifier(detection_objs, classifier, im, im0s)
@@ -225,6 +274,7 @@ def main(
             )
 
             tracking_task.motion_compensation(i, current_frames[i], prev_frames[i])
+            logging.info('Applying motion_compensation')
 
             if detection is None or not len(detection):
                 continue
@@ -235,6 +285,7 @@ def main(
                 im0.shape).round()
 
             tracker_outputs[i] = tracking_task.tracker_hosts[i].update(detection.cpu(), im0)
+            logging.info(f'{len(tracker_outputs[i])} objects were tracked')
 
             if len(tracker_outputs[i]) < 0:
                 continue
@@ -246,61 +297,51 @@ def main(
                 bbox = tracker_output[0:4]
 
                 # New vehicle being tracked
-                if v_id in selective_candidates.keys():
-                    continue
-                if v_id not in candidates.keys():
-                    candidates[v_id] = TrackedObject(
-                        v_id,
-                        class_name,
-                        confidence,
-                        bbox
-                    )
+                if legacy:
+                    legacy_selection(v_id, class_name, confidence, bbox, box_annotator, output_video_config,
+                                     None, selective_candidates)
                 else:
-                    candidates[v_id].update(class_name, confidence, bbox)
-
-                box_annotator.box_label(
-                    candidates[v_id].bbox,
-                    candidates[v_id].get_label(output_video_config),
-                    color=colors(1, True)
-                )
+                    selection(v_id, class_name, confidence, bbox, box_annotator, output_video_config,
+                              candidates, selective_candidates)
 
             # Select candidate (moving not static)
-            if frame_index != 0 and frame_index % algorithm_config.update_period == 0:
+            if not legacy and frame_index != 0 and frame_index % algorithm_config.update_period == 0:
+                num_new_candidate = 0
                 for v_id, candidate in candidates.items():
                     if candidate.get_velocity() >= VEL_THERSOLD \
                             and v_id not in selective_candidates.keys():
                         selective_candidates[v_id] = candidate
                         candidates[v_id] = None
+                        num_new_candidate += 1
 
                 candidates = {v_id: candidate for v_id, candidate
                               in candidates.items() if candidate is not None}
+                logging.info(f'{num_new_candidate} candidate were selected')
 
-            if blur_frames_count != 0 and blur_frames_count >= algorithm_config.blur_frames_limit:
+            if not legacy and blur_frames_count != 0 and blur_frames_count >= algorithm_config.blur_frames_limit:
                 asyncio.run(upload.notify_blur())
                 blur_frames_count = 0
 
             if frame_index != 0 and frame_index % output_result_config.upload_period == 0:
-                # asyncio.run(upload.main(vehicles.copy()))
-
-                """ TODO: For Python 3.6.9, need to use deprecated API Call
-                asyncio.run(upload.static_time(
-                    selective_candidates.copy(),
-                    class_names,
-                    algorithm_config.class_filter,
-                    output_result_config.save_csv
-                ))
-                """
-
-                EVENT_LOOP.run_until_complete(
-                        upload.static_time(
-                            selective_candidates.copy(), 
-                            class_names, 
-                            algorithm_config.class_filter, 
-                            output_result_config.save_csv
-                        )
-                )
+                if legacy:
+                    EVENT_LOOP.run_until_complete(
+                            upload.static_time(
+                                selective_candidates.copy(), 
+                                class_names, 
+                                algorithm_config.class_filter, 
+                                output_result_config.save_csv
+                            )
+                    )
+                else:
+                    asyncio.run(upload.static_time(
+                        selective_candidates.copy(),
+                        class_names,
+                        algorithm_config.class_filter,
+                        output_result_config.save_csv
+                    ))
 
             stream_result(box_annotator, im0, source_path, streaming_windows)
+            logging.info(f'Finish processing {frame_index} frame')
 
             prev_frames[i] = current_frames[i]
 
